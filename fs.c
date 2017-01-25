@@ -381,25 +381,32 @@ bmap(struct inode *ip, uint bn)
 // Double INDIRECT
 // *********************************************************************//
   bn -= NINDIRECT;
-  if(bn < NINDIRECT*NINDIRECT){
-    // Load 2nd indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT+1]) == 0) // 2d block. NDIRECT+1 is to get the index vector
+
+  // Here we load second degree indirect block
+  if(bn < NINDIRECT * NINDIRECT){
+    
+
+    // NDIRECT+1 second degree index
+    if((addr = ip->addrs[NDIRECT+1]) == 0) 
       ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
 
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
-    if ((addr = a[bn/(NINDIRECT)]) == 0) { /* get index for 1st
-                                                indirection. (NINDIRECT is 128) */
+
+    // Index of first indirect
+    if ((addr = a[bn/(NINDIRECT)]) == 0) { 
           a[bn/(NINDIRECT)] = addr = balloc(ip->dev);
           log_write(bp);
       }
-      brelse(bp);               /* release the double indirect table
-                                   (main level) */
+      // Reallocate the double indirect table 
+      brelse(bp);          
 
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
 
-     if ((addr = a[bn%(NINDIRECT)]) == 0) { /*  get the 2nd level table */
+
+    // Recieve second degree table
+    if ((addr = a[bn%(NINDIRECT)]) == 0) { 
           a[bn%(NINDIRECT)] = addr = balloc(ip->dev);
           log_write(bp);
       }
@@ -409,6 +416,7 @@ bmap(struct inode *ip, uint bn)
     }
     
 // *********************************************************************//
+    
   panic("bmap: out of range");
 }
 

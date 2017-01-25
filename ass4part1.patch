@@ -1,0 +1,184 @@
+diff --git a/Makefile b/Makefile
+index 93d525a..490383f 100644
+--- a/Makefile
++++ b/Makefile
+@@ -173,6 +173,7 @@ UPROGS=\
+ 	_usertests\
+ 	_wc\
+ 	_zombie\
++	_test_file\
+ 
+ fs.img: mkfs README $(UPROGS)
+ 	./mkfs fs.img README $(UPROGS)
+diff --git a/fs.c b/fs.c
+index be8c5c5..5b1d4e8 100644
+--- a/fs.c
++++ b/fs.c
+@@ -378,6 +378,37 @@ bmap(struct inode *ip, uint bn)
+     return addr;
+   }
+ 
++// Double INDIRECT
++// *********************************************************************//
++  bn -= NINDIRECT;
++  if(bn < NINDIRECT*NINDIRECT){
++    // Load 2nd indirect block, allocating if necessary.
++    if((addr = ip->addrs[NDIRECT+1]) == 0) // 2d block. NDIRECT+1 is to get the index vector
++      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
++
++    bp = bread(ip->dev, addr);
++    a = (uint*)bp->data;
++    if ((addr = a[bn/(NINDIRECT)]) == 0) { /* get index for 1st
++                                                indirection. (NINDIRECT is 128) */
++          a[bn/(NINDIRECT)] = addr = balloc(ip->dev);
++          log_write(bp);
++      }
++      brelse(bp);               /* release the double indirect table
++                                   (main level) */
++
++    bp = bread(ip->dev, addr);
++    a = (uint*)bp->data;
++
++     if ((addr = a[bn%(NINDIRECT)]) == 0) { /*  get the 2nd level table */
++          a[bn%(NINDIRECT)] = addr = balloc(ip->dev);
++          log_write(bp);
++      }
++
++    brelse(bp);
++    return addr;
++    }
++    
++// *********************************************************************//
+   panic("bmap: out of range");
+ }
+ 
+diff --git a/fs.h b/fs.h
+index 3214f1d..c69dccb 100644
+--- a/fs.h
++++ b/fs.h
+@@ -21,9 +21,17 @@ struct superblock {
+   uint bmapstart;    // Block number of first free map block
+ };
+ 
+-#define NDIRECT 12
++
++// NDIRECT is reduced by 1 to 11 - free one slot for another indirect slot
++// *********************************************************************//
++#define NDIRECT 11
++// *********************************************************************//
+ #define NINDIRECT (BSIZE / sizeof(uint))
+-#define MAXFILE (NDIRECT + NINDIRECT)
++
++// NDIRECT (11) + NIDIRECT (128) + NINDIRECT*NINDIRECT (128*128) = 16,523 BLOCKS
++// *********************************************************************//
++#define MAXFILE (NDIRECT + NINDIRECT + NINDIRECT*NINDIRECT)
++// *********************************************************************//
+ 
+ // On-disk inode structure
+ struct dinode {
+@@ -32,7 +40,12 @@ struct dinode {
+   short minor;          // Minor device number (T_DEV only)
+   short nlink;          // Number of links to inode in file system
+   uint size;            // Size of file (bytes)
+-  uint addrs[NDIRECT+1];   // Data block addresses
++
++// We decreased NDIRECT by 1, hence we add 1 to addrs array so it stays constant
++// *********************************************************************//
++  uint addrs[NDIRECT+2];   // Data block addresses
++// *********************************************************************//
++
+ };
+ 
+ // Inodes per block.
+diff --git a/mkfs.c b/mkfs.c
+index 8e011a7..b7c3394 100644
+--- a/mkfs.c
++++ b/mkfs.c
+@@ -24,7 +24,7 @@ int nbitmap = FSSIZE/(BSIZE*8) + 1;
+ int ninodeblocks = NINODES / IPB + 1;
+ int nlog = LOGSIZE;
+ int nmeta;    // Number of meta blocks (boot, sb, nlog, inode, bitmap)
+-int nblocks;  // Number of data blocks
++int nblocks = 17000;  // Number of data blocks
+ 
+ int fsfd;
+ struct superblock sb;
+diff --git a/param.h b/param.h
+index a7e90ef..5402a20 100644
+--- a/param.h
++++ b/param.h
+@@ -10,5 +10,5 @@
+ #define MAXOPBLOCKS  10  // max # of blocks any FS op writes
+ #define LOGSIZE      (MAXOPBLOCKS*3)  // max data blocks in on-disk log
+ #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
+-#define FSSIZE       1000  // size of file system in blocks
++#define FSSIZE       16600  // size of file system in blocks
+ 
+diff --git a/test_file.c b/test_file.c
+new file mode 100644
+index 0000000..cf944ad
+--- /dev/null
++++ b/test_file.c
+@@ -0,0 +1,62 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fcntl.h"
++
++int
++main()
++{
++  char buf[512];
++  int fd, i, blocks;
++  fd = open("test.file", O_CREATE | O_WRONLY);
++
++  if(fd < 0){
++    printf(2, "File Generation: Error while opening file\n");
++    exit();
++  }
++
++  blocks = 0;
++  while(1){
++    *(int*)buf = blocks;
++    int cc = write(fd, buf, sizeof(buf));
++    // printf(2, "Blocks written: #%d \n", blocks);
++    if(cc <= 0)
++      break;
++    blocks++;
++  	if (blocks % 2 == 0) {
++      int block_w = blocks/2;
++      printf(2, "%dKB has been written to disk \n", block_w);
++    }
++    if (blocks == 2000)
++      break;
++  }
++
++  printf(1, "\nwrote %d blocks\n", blocks);
++  // If arrived here, 1MB has been just been written
++  printf(1, "Finished writing 6KB (direct) \n");
++  printf(1, "Finished writing 70KB (single direct) \n");
++  printf(1, "Finished writing 1MB \n");
++
++  close(fd);
++  fd = open("test.file", O_RDONLY);
++  if(fd < 0){
++    printf(2, "test: cannot re-open test.file for reading\n");
++    exit();
++  }
++  for(i = 0; i < blocks; i++){
++    int cc = read(fd, buf, sizeof(buf));
++    if(cc <= 0){
++      printf(2, "test: read error at sector %d\n", i);
++      exit();
++    }
++    if(*(int*)buf != i){
++      printf(2, "test: read the wrong data (%d) for sector %d\n",
++             *(int*)buf, i);
++      exit();
++    }
++  }
++
++  printf(1, "done; ok\n"); 
++
++  exit();
++}
